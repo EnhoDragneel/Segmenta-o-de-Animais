@@ -1,0 +1,153 @@
+import cv2
+import numpy as np
+from matplotlib import pyplot as plt
+
+Image1 = "C:/Users/Administrador/Documents/UFPI/Setimo Periodo/PDI/Trabalho Final/Codigo/Imagens/tigre01.jpg"
+Image2 = "C:/Users/Administrador/Documents/UFPI/Setimo Periodo/PDI/Trabalho Final/Codigo/Imagens/tigre02.jpg"
+Image3 = "C:/Users/Administrador/Documents/UFPI/Setimo Periodo/PDI/Trabalho Final/Codigo/Imagens/rinoceronte.jpg"
+
+def draw_ground_truth(image):
+    mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    points = []  
+
+    def draw(event, x, y, flags, param):
+        nonlocal points
+        if event == cv2.EVENT_LBUTTONDOWN:
+            points.append((x, y))
+            if len(points) > 1:
+                cv2.line(image, points[-2], points[-1], (0, 255, 0), 2)
+            cv2.circle(image, (x, y), 5, (0, 0, 255), -1)  
+            cv2.imshow("Draw Mask", image)
+
+        elif event == cv2.EVENT_RBUTTONDOWN:  
+            if len(points) > 1:
+                cv2.line(image, points[-1], points[0], (0, 255, 0), 2)
+                cv2.fillPoly(mask, [np.array(points)], 255) 
+                cv2.imshow("Draw Mask", image)
+                print("Poligono fechado.")
+
+    cv2.namedWindow("Draw Mask")
+    cv2.setMouseCallback("Draw Mask", draw)
+
+    while True:
+        display = image.copy()
+        display[mask == 255] = (0, 255, 0)  
+        cv2.imshow("Draw Mask", display)
+        key = cv2.waitKey(1) & 0xFF
+        if key == 27:  
+            break
+
+    cv2.destroyAllWindows()
+    return mask
+
+def segmentar_imagem(image):
+    
+    # 1. Conversão para escala de cinza
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    cv2.imshow("1 - Escala de Cinza", gray)
+
+    # 2. Equalização do histograma
+    gray_eq = cv2.equalizeHist(gray)
+    cv2.imshow("2 - Equalizacao do Histograma", gray_eq)
+
+    # 3. Desfoque Gaussiano
+    blurred = cv2.bilateralFilter(gray_eq, 4, 75, 75)
+    cv2.imshow("3 - Desfoque Gaussiano", blurred)
+
+    # 4. Detecção de bordas (Canny)
+    edges = cv2.Canny(blurred, 200, 600)
+    cv2.imshow("4 - Bordas (Canny)", edges)
+
+    # 5. Segmentação binária (Otsu)
+    _, otsu_mask = cv2.threshold(gray_eq, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    cv2.imshow("5 - Mascara Binaria (Otsu)", otsu_mask)
+
+    # 6. Combinação
+    combined_mask = cv2.bitwise_and(edges, otsu_mask)
+    cv2.imshow("6 - Mascara Combinada", combined_mask)
+
+    # 7. Dilatação
+    dilated_mask = cv2.dilate(combined_mask, None, iterations=2)
+    cv2.imshow("7 - Mascara Dilatada", dilated_mask)
+
+    # 8. Componentes conectados
+    ret, markers = cv2.connectedComponents(dilated_mask)
+    area_threshold = 50  
+    for label in range(1, ret): 
+        if np.sum(markers == label) < area_threshold:
+            markers[markers == label] = 0
+
+    # 9. Watershed
+    markers = markers + 1  
+    markers[combined_mask == 0] = 0  
+    cv2.watershed(image, markers)
+
+    
+    markers_display = np.zeros_like(gray, dtype=np.uint8)
+    markers_display[markers == -1] = 255 
+    cv2.imshow("8 - Watershed (Fronteiras)", markers_display)
+
+    
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    return markers, combined_mask
+
+def dice_score(mask1, mask2):
+    intersection = np.sum(mask1 & mask2)
+    return (2. * intersection) / (np.sum(mask1) + np.sum(mask2))
+
+def main():
+    image_path = Image1 
+    image = cv2.imread(image_path)
+    if image is None:
+        print("Erro ao carregar a imagem.")
+        return
+
+    # Redimensionar a imagem
+    image = cv2.resize(image, (900, 700))
+
+    print("Desenhe a mascara manual e pressione ESC quando terminar.")
+    ground_truth = draw_ground_truth(image)
+
+    markers, calculated_mask = segmentar_imagem(image)
+
+    # Aplicando dilatação na máscara calculada após o Watershed
+    kernel = np.ones((5, 5), np.uint8)  
+    dilated_calculated_mask = cv2.dilate(calculated_mask, kernel, iterations=2)
+
+    # Calculando o Dice Score para a máscara calculada antes da dilatação
+    dice_before_dilation = dice_score(ground_truth > 0, calculated_mask > 0)
+
+    # Calculando o Dice Score para a máscara dilatada
+    dice_after_dilation = dice_score(ground_truth > 0, dilated_calculated_mask > 0)
+
+    # Imagem original
+    plt.subplot(1, 4, 1)
+    plt.title("Imagem Original")
+    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    plt.axis('off')
+
+    # Máscara manual (Ground Truth)
+    plt.subplot(1, 4, 2)
+    plt.title("Mascara Manual")
+    plt.imshow(ground_truth, cmap='gray')
+    plt.axis('off')
+
+    # Máscara calculada antes da dilatação
+    plt.subplot(1, 4, 3)
+    plt.title(f"Mascara Calculada\nDice Score (antes dilatação): {dice_before_dilation:.2f}")
+    plt.imshow(calculated_mask, cmap='gray')
+    plt.axis('off')
+
+    # Máscara calculada após dilatação
+    plt.subplot(1, 4, 4)
+    plt.title(f"Mascara Calculada\nDice Score (após dilatação): {dice_after_dilation:.2f}")
+    plt.imshow(dilated_calculated_mask, cmap='gray')
+    plt.axis('off')
+
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == "__main__":
+    main()
